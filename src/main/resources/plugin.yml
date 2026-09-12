@@ -1,0 +1,6 @@
+name: Graves
+version: 1.0-SNAPSHOT
+main: de.shiru.graves.GravesPlugin
+api-version: '1.13'
+commands:
+  grave:
