@@ -24,7 +24,6 @@ public class GravesPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         instance = this;
-        var listener = new DeathListener();
         ConfigurationSerialization.registerClass(Grave.class);
         graveSaveFile = new GraveSaveFile();
         if(!getConfig().contains("grave-lifetime")) {
@@ -39,7 +38,7 @@ public class GravesPlugin extends JavaPlugin {
         getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, commands -> {
             commands.registrar().register(GraveCommand.createCommand());
         });
-        listener.loadData();
+        var listener = new DeathListener();
         Bukkit.getPluginManager().registerEvents(listener, this);
         updateTask = listener.createUpdateTask();
     }

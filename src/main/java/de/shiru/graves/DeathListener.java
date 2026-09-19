@@ -1,5 +1,6 @@
 package de.shiru.graves;
 
+import com.destroystokyo.paper.event.player.PlayerPostRespawnEvent;
 import io.papermc.paper.datacomponent.item.ResolvableProfile;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -7,26 +8,35 @@ import org.bukkit.*;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.Skull;
 import org.bukkit.block.data.Rotatable;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.NotePlayEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.event.world.EntitiesLoadEvent;
+import org.bukkit.inventory.ItemFlag;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.CompassMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.util.BoundingBox;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
+import org.bukkit.util.Vector;
+
+import java.util.*;
 
 public class DeathListener implements Listener {
-    private List<Grave> graves;
-    private NamespacedKey hashCodeKey;
-    private NamespacedKey counterKey;
+    private final NamespacedKey hashCodeKey;
+    private final NamespacedKey counterKey;
+    private final List<Grave> graves;
     private final BlockFace[] faces = {
             BlockFace.SOUTH, BlockFace.SOUTH_SOUTH_WEST, BlockFace.SOUTH_WEST, BlockFace.WEST_SOUTH_WEST,
             BlockFace.WEST, BlockFace.WEST_NORTH_WEST, BlockFace.NORTH_WEST, BlockFace.NORTH_NORTH_WEST,
@@ -34,7 +44,7 @@ public class DeathListener implements Listener {
             BlockFace.EAST, BlockFace.EAST_SOUTH_EAST, BlockFace.SOUTH_EAST, BlockFace.SOUTH_SOUTH_EAST
     };
 
-    public void loadData() {
+    public DeathListener() {
         var plugin = GravesPlugin.get();
         hashCodeKey = new NamespacedKey(plugin, "grave_code");
         counterKey = new NamespacedKey(plugin, "grave_counter");
@@ -45,7 +55,25 @@ public class DeathListener implements Listener {
 
     public int createUpdateTask() {
         return Bukkit.getScheduler()
-                .scheduleSyncRepeatingTask(GravesPlugin.get(), this::updateCounters, 20, 20);
+                .scheduleSyncRepeatingTask(GravesPlugin.get(), this::updateCounters, 20, 1);
+    }
+
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        var player = event.getPlayer();
+        var inventory = player.getInventory();
+        var items = Arrays.stream(inventory.getContents())
+                .filter(Objects::nonNull)
+                .filter(item -> {
+                    if(!item.hasItemMeta()) return false;
+                    return item.getItemMeta().getPersistentDataContainer().has(hashCodeKey);
+                }).toArray(ItemStack[]::new);
+        for(var item : items) {
+            var id = UUID.fromString(item.getItemMeta().getPersistentDataContainer().get(hashCodeKey, PersistentDataType.STRING));
+            var graveOpt = graves.stream().filter(grave -> grave.getId().equals(id)).findAny();
+            if(graveOpt.isPresent()) continue;
+            inventory.remove(item);
+        }
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -127,6 +155,7 @@ public class DeathListener implements Listener {
         }
         clearArmorStands(grave);
         graves.remove(grave);
+        GravesPlugin.get().getSaveFile().set("graves", Collections.unmodifiableList(graves));
         block.setType(Material.AIR);
         player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1, 1);
     }
@@ -160,7 +189,8 @@ public class DeathListener implements Listener {
         Arrays.stream(entities).filter(entity ->
                 !entity.getPersistentDataContainer().has(counterKey)
         ).forEach(entity -> {
-            var graveOpt = graves.stream().filter(grave -> grave.getDeathLocation().equals(entity.getLocation())).findFirst();
+            var uuid = entity.getPersistentDataContainer().get(hashCodeKey, PersistentDataType.STRING);
+            var graveOpt = graves.stream().filter(grave -> grave.getId().toString().equals(uuid)).findFirst();
             if(graveOpt.isEmpty()) {
                 entity.getLocation().getBlock().setType(Material.AIR);
                 clearArmorStands(entity.getLocation());
@@ -168,19 +198,40 @@ public class DeathListener implements Listener {
         });
     }
 
+    @EventHandler
+    public void onInteract(PlayerInteractEvent event) {
+        var player = event.getPlayer();
+        var item = event.getItem();
+        if(!(item != null && isLockedItem(item))) return;
+        var compassMeta = (CompassMeta) item.getItemMeta();
+        var location = compassMeta.getLodestone().toVector().add(new Vector(0.5, 2, 0.5));
+        var playerLocation = player.getLocation().toVector().add(new Vector(0.5, 2, 0.5));
+        location.subtract(playerLocation).normalize().multiply(0.1);
+        var particleVector = playerLocation.clone();
+        var world = player.getWorld();
+        for(int i = 0; i < 30; i++) {
+            world.spawnParticle(Particle.ELECTRIC_SPARK, particleVector.toLocation(world), 1);
+            particleVector.add(location);
+        }
+    }
+
     private void updateCounters() {
         var lifetime = (long) GravesPlugin.get().getConfig().getInt("grave-lifetime");
         lifetime *= 60 * 1000;
         var currentTime = System.currentTimeMillis();
+        var changed = false;
+        var updateArmorstands = Bukkit.getCurrentTick() % 20 == 0;
         for(var grave : List.copyOf(graves)) {
-            if(currentTime - grave.getTimestamp() > lifetime) {
+            if(grave.reduceTick() <= 0) {
                 graves.remove(grave);
+                changed = true;
                 if(!grave.getDeathLocation().getChunk().isLoaded())
                     continue;
                 clearArmorStands(grave);
                 grave.getDeathLocation().getBlock().setType(Material.AIR);
                 continue;
             }
+            if(!updateArmorstands) continue;
             var chunk = grave.getDeathLocation().getChunk();
             if(!(chunk.isLoaded() && chunk.isEntitiesLoaded()))
                 continue;
@@ -194,27 +245,83 @@ public class DeathListener implements Listener {
                 continue;
             }
             var armorStand = counterOpt.get();
-            var counters = convertDifferenceToCounter(lifetime - (currentTime - grave.getTimestamp()));
+            var counters = convertToCounter(grave.getRemainder());
             var newDisplayName = Component.text("Expires in ", NamedTextColor.GREEN)
                     .append(Component.text(counters, NamedTextColor.YELLOW));
             armorStand.customName(newDisplayName);
         }
+        if(changed) {
+            GravesPlugin.get().getSaveFile().set("graves", Collections.unmodifiableList(graves));
+        }
     }
 
-    private String convertDifferenceToCounter(long difference) {
-        final long minutesMs = 60 * 1000;
-        final long secondsMs = 1000;
+    private String convertToCounter(long remainder) {
+        long totalSeconds = remainder / 20;
+        final int minutesInSecs = 60;
         var counts = new StringBuilder();
         //minutes
-        var minutes = (difference - (difference % minutesMs)) / minutesMs;
+        var minutes = totalSeconds / minutesInSecs;
         if(minutes < 10) counts.append(0);
         counts.append(minutes).append(':');
-        difference -= minutes * minutesMs;
+        totalSeconds -= minutes * minutesInSecs;
         //seconds
-        var seconds = (difference - (difference % secondsMs)) / secondsMs;
-        if(seconds < 10) counts.append(0);
-        counts.append(seconds);
+        if(totalSeconds < 10) counts.append(0);
+        counts.append(totalSeconds);
         return counts.toString();
+    }
+
+    @EventHandler
+    public void onRespawn(PlayerPostRespawnEvent event) {
+        var player = event.getPlayer();
+        var graveOpt = graves.stream()
+                .filter(grave -> grave.getPlayer().equals(player.getUniqueId())).findAny();
+        if(graveOpt.isEmpty()) return;
+        createGraveCompass(player, graveOpt.get());
+    }
+
+    private void createGraveCompass(Player player, Grave grave) {
+        var compass = new ItemStack(Material.COMPASS);
+        if(compass.getItemMeta() instanceof CompassMeta meta) {
+            meta.getPersistentDataContainer().set(hashCodeKey, PersistentDataType.STRING, grave.getId().toString());
+            var location = grave.getDeathLocation();
+            meta.setLodestone(location);
+            meta.setLodestoneTracked(true);
+            meta.addEnchant(Enchantment.LOYALTY, 1, false);
+            meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
+            meta.itemName(Component.text(player.getName() + "'s Grave Compass", NamedTextColor.RED));
+            meta.lore(Arrays.asList(
+                    Component.text("X: ", NamedTextColor.GREEN).append(Component.text(location.getBlockX(), NamedTextColor.YELLOW)),
+                    Component.text("Y: ", NamedTextColor.GREEN).append(Component.text(location.getBlockY(), NamedTextColor.YELLOW)),
+                    Component.text("Z: ", NamedTextColor.GREEN).append(Component.text(location.getBlockZ(), NamedTextColor.YELLOW))
+            ));
+            compass.setItemMeta(meta);
+            player.getInventory().addItem(compass);
+            return;
+        }
+        GravesPlugin.get().getLogger().severe("Couldn't create grave compass for " + player.getName());
+    }
+
+    private boolean isLockedItem(ItemStack item) {
+        if(item.getType() == Material.COMPASS && item.getItemMeta() instanceof CompassMeta meta) {
+            return meta.getPersistentDataContainer().has(hashCodeKey);
+        }
+        return false;
+    }
+
+    @EventHandler
+    public void onInventoryChange(InventoryClickEvent event) {
+        if(event.getCurrentItem() == null) return;
+        event.setCancelled(isLockedItem(event.getCurrentItem()));
+    }
+
+    @EventHandler
+    public void onItemDrop(PlayerDropItemEvent event) {
+        event.setCancelled(isLockedItem(event.getItemDrop().getItemStack()));
+    }
+
+    @EventHandler
+    public void onItemSwap(PlayerSwapHandItemsEvent event) {
+        event.setCancelled(isLockedItem(event.getMainHandItem()));
     }
 
 }

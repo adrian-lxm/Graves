@@ -12,7 +12,7 @@ public class Grave implements ConfigurationSerializable {
     private final UUID id;
     private final UUID player;
     private final Location deathLocation;
-    private final long timestamp;
+    private long remainder;
     private final ItemStack[] inventory;
     private final int level;
     private final float exp;
@@ -21,10 +21,10 @@ public class Grave implements ConfigurationSerializable {
         id = UUID.randomUUID();
         this.player = player.getUniqueId();
         deathLocation = player.getLocation().getBlock().getLocation();
-        timestamp = System.currentTimeMillis();
+        remainder = GravesPlugin.get().getConfig().getInt("grave-lifetime") * 60L;
         var invContent = player.getInventory().getContents();
         inventory = Arrays.stream(invContent)
-                .filter(Objects::nonNull).toArray(ItemStack[]::new);
+                .filter(Objects::nonNull).map(ItemStack::clone).toArray(ItemStack[]::new);
         level = player.getLevel();
         exp = player.getExp();
     }
@@ -33,10 +33,19 @@ public class Grave implements ConfigurationSerializable {
         id = UUID.fromString((String) map.get("id"));
         player = UUID.fromString((String) map.get("player"));
         deathLocation = (Location) map.get("deathLocation");
-        timestamp = (Long) map.get("timestamp");
+        remainder = (Long) map.get("remainder");
         inventory = ((List<ItemStack>) map.get("inventory")).toArray(ItemStack[]::new);
         level = (Integer) map.get("level");
         exp = (Float) map.get("exp");
+    }
+
+    public long reduceTick() {
+        remainder--;
+        return remainder;
+    }
+
+    public long getRemainder() {
+        return remainder;
     }
 
     public UUID getId() {
@@ -49,10 +58,6 @@ public class Grave implements ConfigurationSerializable {
 
     public Location getDeathLocation() {
         return deathLocation;
-    }
-
-    public long getTimestamp() {
-        return timestamp;
     }
 
     public int getLevel() {
@@ -73,7 +78,7 @@ public class Grave implements ConfigurationSerializable {
         map.put("id", id.toString());
         map.put("player", player.toString());
         map.put("deathLocation", deathLocation);
-        map.put("timestamp", timestamp);
+        map.put("remainder", remainder);
         map.put("inventory", inventory);
         map.put("level", level);
         map.put("exp", exp);
