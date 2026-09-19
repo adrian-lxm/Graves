@@ -4,6 +4,7 @@ import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.tree.LiteralCommandNode;
+import de.shiru.graves.listeners.GraveListener;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
@@ -38,9 +39,7 @@ public class GravesPlugin extends JavaPlugin {
         getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, commands -> {
             commands.registrar().register(GraveCommand.createCommand());
         });
-        var listener = new DeathListener();
-        Bukkit.getPluginManager().registerEvents(listener, this);
-        updateTask = listener.createUpdateTask();
+        GraveListener.create();
     }
 
     @Override
