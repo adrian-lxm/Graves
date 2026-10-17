@@ -4,7 +4,6 @@ import com.mojang.brigadier.Command;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.tree.LiteralCommandNode;
-import de.shiru.graves.listeners.GraveListener;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
@@ -12,21 +11,17 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.Sound;
-import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.configuration.serialization.ConfigurationSerialization;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public class GravesPlugin extends JavaPlugin {
     private static GravesPlugin instance;
-    private GraveSaveFile graveSaveFile;
-    private int updateTask;
 
     @Override
     public void onEnable() {
         instance = this;
         ConfigurationSerialization.registerClass(Grave.class);
-        graveSaveFile = new GraveSaveFile();
         if(!getConfig().contains("grave-lifetime")) {
             getConfig().set("grave-lifetime", 5);
             saveConfig();
@@ -39,17 +34,12 @@ public class GravesPlugin extends JavaPlugin {
         getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, commands -> {
             commands.registrar().register(GraveCommand.createCommand());
         });
-        GraveListener.create();
+        GravesManager.get().initialize(this);
     }
 
     @Override
     public void onDisable() {
-        graveSaveFile.close();
-        Bukkit.getScheduler().cancelTask(updateTask);
-    }
-
-    public YamlConfiguration getSaveFile() {
-        return graveSaveFile.getConfig();
+        GravesManager.get().close(this);
     }
 
     public static GravesPlugin get() {

@@ -2,9 +2,12 @@ package de.shiru.graves.listeners;
 
 import com.destroystokyo.paper.event.player.PlayerPostRespawnEvent;
 import de.shiru.graves.Grave;
+import de.shiru.graves.GravesManager;
 import de.shiru.graves.GravesPlugin;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Bukkit;
+import org.bukkit.Color;
 import org.bukkit.Material;
 import org.bukkit.Particle;
 import org.bukkit.enchantments.Enchantment;
@@ -19,18 +22,18 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.CompassMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.util.Vector;
-
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class CompassListener extends GraveListener {
 
     @Override
-    protected void initialize() {}
+    public void initialize() {}
     @Override
-    protected void destroy() {}
+    public void destroy() {}
 
     private boolean isLockedItem(ItemStack item) {
-        var uuidKey = super.getUuidKey();
+        var uuidKey = GravesManager.get().getUuidKey();
         if(item.getType() == Material.COMPASS && item.getItemMeta() instanceof CompassMeta meta) {
             return meta.getPersistentDataContainer().has(uuidKey);
         }
@@ -43,15 +46,15 @@ public class CompassListener extends GraveListener {
         var item = event.getItem();
         if(!(item != null && isLockedItem(item))) return;
         var compassMeta = (CompassMeta) item.getItemMeta();
-        var location = compassMeta.getLodestone().toVector().add(new Vector(0.5, 2, 0.5));
-        var playerLocation = player.getLocation().toVector().add(new Vector(0.5, 2, 0.5));
-        location.subtract(playerLocation).normalize().multiply(0.1);
-        var particleVector = playerLocation.clone();
-        var world = player.getWorld();
-        for(int i = 0; i < 30; i++) {
-            world.spawnParticle(Particle.ELECTRIC_SPARK, particleVector.toLocation(world), 1);
-            particleVector.add(location);
-        }
+        var particleVelocity = compassMeta.getLodestone().toVector().add(new Vector(0.5, 2, 0.5));
+        var playerLocation = player.getLocation().clone().add(0.5, 2, 0.5);
+        particleVelocity.subtract(playerLocation.toVector()).multiply(1 / (particleVelocity.length() * 10));
+        var i = new AtomicInteger(1);
+        var dustOption = new Particle.DustOptions(Color.RED, 2);
+        Bukkit.getScheduler().runTaskTimer(GravesPlugin.get(), (task) -> {
+            player.spawnParticle(Particle.DUST, playerLocation.add(particleVelocity), 1, dustOption);
+            if(i.getAndIncrement() >= 30) task.cancel();
+        }, 1, 3);
     }
 
     @EventHandler
@@ -73,7 +76,7 @@ public class CompassListener extends GraveListener {
     @EventHandler
     public void onRespawn(PlayerPostRespawnEvent event) {
         var player = event.getPlayer();
-        var graveOpt = getGraves().stream()
+        var graveOpt = GravesManager.get().getGraves().stream()
                 .filter(grave -> grave.getPlayer().equals(player.getUniqueId())).findAny();
         if(graveOpt.isEmpty()) return;
         createGraveCompass(player, graveOpt.get());
@@ -82,13 +85,15 @@ public class CompassListener extends GraveListener {
     private void createGraveCompass(Player player, Grave grave) {
         var compass = new ItemStack(Material.COMPASS);
         if(compass.getItemMeta() instanceof CompassMeta meta) {
-            meta.getPersistentDataContainer().set(getUuidKey(), PersistentDataType.STRING, grave.getId().toString());
+            meta.getPersistentDataContainer().set(GravesManager.get().getUuidKey(), PersistentDataType.STRING, grave.getId().toString());
             var location = grave.getDeathLocation();
             meta.setLodestone(location);
-            meta.setLodestoneTracked(true);
+            meta.setLodestoneTracked(false);
             meta.addEnchant(Enchantment.LOYALTY, 1, false);
             meta.addItemFlags(ItemFlag.HIDE_ENCHANTS);
-            meta.itemName(Component.text(player.getName() + "'s Grave Compass", NamedTextColor.RED));
+            var customName = Component.text(player.getName(), NamedTextColor.YELLOW)
+                            .append(Component.text("'s Grave Compass", NamedTextColor.RED));
+            meta.customName(customName);
             meta.lore(Arrays.asList(
                     Component.text("X: ", NamedTextColor.GREEN).append(Component.text(location.getBlockX(), NamedTextColor.YELLOW)),
                     Component.text("Y: ", NamedTextColor.GREEN).append(Component.text(location.getBlockY(), NamedTextColor.YELLOW)),

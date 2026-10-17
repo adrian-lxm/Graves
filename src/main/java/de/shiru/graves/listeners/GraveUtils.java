@@ -1,6 +1,7 @@
 package de.shiru.graves.listeners;
 
 import de.shiru.graves.Grave;
+import de.shiru.graves.GravesManager;
 import org.bukkit.Location;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
@@ -24,20 +25,20 @@ public class GraveUtils {
         return counts.toString();
     }
 
-    protected static void clearArmorStands(GraveListener listener, Grave grave) {
+    protected static void clearArmorStands(Grave grave) {
         var middleLocation = grave.getDeathLocation().clone().add(0.5, 0, 0.5);
-        clearArmorStands(listener, middleLocation);
+        clearArmorStands(middleLocation);
     }
 
-    protected static void clearArmorStands(GraveListener listener, Location loc) {
-        var uuidKey = listener.getUuidKey();
+    protected static void clearArmorStands(Location loc) {
+        var uuidKey = GravesManager.get().getUuidKey();
         loc.getWorld().getNearbyEntities(BoundingBox.of(loc, 2, 2, 2), entity ->
                 entity instanceof ArmorStand && entity.getPersistentDataContainer().has(uuidKey)
         ).forEach(Entity::remove);
     }
 
-    protected static ArmorStand createAssociatedArmorStand(GraveListener graveListener, Location loc, Grave grave) {
-        var uuidKey = graveListener.getUuidKey();
+    protected static ArmorStand createAssociatedArmorStand(Location loc, Grave grave) {
+        var uuidKey = GravesManager.get().getUuidKey();
         var armorStand = loc.getWorld().spawn(loc, ArmorStand.class);
         armorStand.setVisible(false);
         armorStand.setCanMove(false);
@@ -49,8 +50,8 @@ public class GraveUtils {
     }
 
     protected static ArmorStand createCounterArmorStand(GraveListener graveListener, Location loc, Grave grave) {
-        var counterKey = graveListener.getCounterKey();
-        var armorstand = createAssociatedArmorStand(graveListener, loc, grave);
+        var counterKey = GravesManager.get().getCounterKey();
+        var armorstand = createAssociatedArmorStand(loc, grave);
         armorstand.getPersistentDataContainer().set(counterKey, PersistentDataType.BOOLEAN, true);
         return armorstand;
     }

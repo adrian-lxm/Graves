@@ -1,6 +1,7 @@
 package de.shiru.graves.listeners;
 
 import de.shiru.graves.Grave;
+import de.shiru.graves.GravesManager;
 import de.shiru.graves.GravesPlugin;
 import io.papermc.paper.datacomponent.item.ResolvableProfile;
 import net.kyori.adventure.text.Component;
@@ -14,6 +15,7 @@ import org.bukkit.entity.Entity;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -34,30 +36,35 @@ public class GraveCreationListener extends GraveListener {
     };
 
     @Override
-    protected void initialize() {
+    public void initialize() {
         updateTask = Bukkit.getScheduler()
                 .scheduleSyncRepeatingTask(GravesPlugin.get(), this::updateCounters, 20, 1);
     }
 
     @Override
-    protected void destroy() {
+    public void destroy() {
         Bukkit.getScheduler().cancelTask(updateTask);
     }
 
     private void updateCounters() {
-        var lifetime = (long) GravesPlugin.get().getConfig().getInt("grave-lifetime");
-        lifetime *= 60 * 1000;
-        var currentTime = System.currentTimeMillis();
         var changed = false;
         var updateArmorstands = Bukkit.getCurrentTick() % 20 == 0;
-        for(var grave : List.copyOf(getGraves())) {
+        var graves = GravesManager.get().getGraves();
+        for(var grave : List.copyOf(graves)) {
             if(grave.reduceTick() <= 0) {
-                getGraves().remove(grave);
+                graves.remove(grave);
                 changed = true;
                 if(!grave.getDeathLocation().getChunk().isLoaded())
                     continue;
-                GraveUtils.clearArmorStands(this, grave);
+                GraveUtils.clearArmorStands(grave);
                 grave.getDeathLocation().getBlock().setType(Material.AIR);
+                var player = Bukkit.getPlayer(grave.getPlayer());
+                if(player == null) continue;
+                Arrays.stream(player.getInventory().getContents()).filter(item  -> {
+                    if(item != null && item.getType() == Material.COMPASS && item.hasItemMeta())
+                        return item.getItemMeta().getPersistentDataContainer().has(GravesManager.get().getUuidKey());
+                    return false;
+                }).forEach(item -> player.getInventory().removeItem(item));
                 continue;
             }
             if(!updateArmorstands) continue;
@@ -65,8 +72,9 @@ public class GraveCreationListener extends GraveListener {
             if(!(chunk.isLoaded() && chunk.isEntitiesLoaded()))
                 continue;
             var middleLocation = grave.getDeathLocation().clone().add(0.5, 0, 0.5);
+            var counterKey = GravesManager.get().getCounterKey();
             var counterOpt = chunk.getWorld().getNearbyEntities(BoundingBox.of(middleLocation, 0, 2, 0), entity ->
-                    entity instanceof ArmorStand && entity.getPersistentDataContainer().has(getCounterKey())
+                    entity instanceof ArmorStand && entity.getPersistentDataContainer().has(counterKey)
             ).stream().findFirst();
             if(counterOpt.isEmpty()) {
                 var playerName = Bukkit.getOfflinePlayer(grave.getPlayer()).getName();
@@ -80,7 +88,7 @@ public class GraveCreationListener extends GraveListener {
             armorStand.customName(newDisplayName);
         }
         if(changed) {
-            GravesPlugin.get().getSaveFile().set("graves", Collections.unmodifiableList(getGraves()));
+            GravesManager.get().getSaveConfig().set("graves", Collections.unmodifiableList(graves));
         }
     }
 
@@ -88,25 +96,33 @@ public class GraveCreationListener extends GraveListener {
     public void onPlayerJoin(PlayerJoinEvent event) {
         var player = event.getPlayer();
         var inventory = player.getInventory();
-        var items = Arrays.stream(inventory.getContents())
-                .filter(Objects::nonNull)
-                .filter(item -> {
-                    if(!item.hasItemMeta()) return false;
-                    return item.getItemMeta().getPersistentDataContainer().has(getUuidKey());
-                }).toArray(ItemStack[]::new);
-        for(var item : items) {
-            var id = UUID.fromString(item.getItemMeta().getPersistentDataContainer().get(getUuidKey(), PersistentDataType.STRING));
-            var graveOpt = getGraves().stream().filter(grave -> grave.getId().equals(id)).findAny();
-            if(graveOpt.isPresent()) continue;
-            inventory.remove(item);
-        }
+        var uuidKey = GravesManager.get().getUuidKey();
+        Arrays.stream(inventory.getContents()).filter(item -> {
+            if(item != null && item.getType() == Material.COMPASS && item.hasItemMeta())
+                return item.getItemMeta().getPersistentDataContainer().has(uuidKey);
+            return false;
+        }).forEach(item -> {
+            var id = UUID.fromString(item.getItemMeta().getPersistentDataContainer().get(uuidKey, PersistentDataType.STRING));
+            var graveOpt = GravesManager.get().getGraves().stream()
+                    .filter(grave -> grave.getId().equals(id)).findAny();
+            if(graveOpt.isEmpty())
+                inventory.remove(item);
+        });
     }
 
+
+    private final List<EntityDamageEvent.DamageCause> illegalCauses = List.of(
+            EntityDamageEvent.DamageCause.CUSTOM, EntityDamageEvent.DamageCause.WORLD_BORDER
+    );
     @EventHandler(ignoreCancelled = true)
     public void onPlayerDeath(PlayerDeathEvent event) {
         var player = event.getPlayer();
-        var grave = new Grave(player);
-        getGraves().add(grave);
+        var damageCause = player.getLastDamageCause();
+        if(damageCause == null || illegalCauses.contains(damageCause.getCause()))
+            return;
+        var grave = new Grave(player, damageCause.getCause() == EntityDamageEvent.DamageCause.VOID);
+        var graves = GravesManager.get().getGraves();
+        graves.add(grave);
         var block = player.getLocation().getBlock();
         var location = block.getLocation();
         block.setType(Material.PLAYER_HEAD);
@@ -117,13 +133,13 @@ public class GraveCreationListener extends GraveListener {
             block.setBlockData(rotatable);
         }
         if(block.getState() instanceof Skull skull) {
-            skull.getPersistentDataContainer().set(getUuidKey(), PersistentDataType.STRING, grave.getId().toString());
+            skull.getPersistentDataContainer().set(GravesManager.get().getUuidKey(), PersistentDataType.STRING, grave.getId().toString());
             skull.setProfile(ResolvableProfile.resolvableProfile(player.getPlayerProfile()));
             skull.update(true);
         }
-        GravesPlugin.get().getSaveFile().set("graves", Collections.unmodifiableList(getGraves()));
+        GravesManager.get().getSaveConfig().set("graves", Collections.unmodifiableList(graves));
         var nameStandLocation = location.clone().add(0.5, 0, 0.5);
-        var nameStand = GraveUtils.createAssociatedArmorStand(this, nameStandLocation, grave);
+        var nameStand = GraveUtils.createAssociatedArmorStand(nameStandLocation, grave);
         var component = Component.text(player.getName() + "'s", NamedTextColor.YELLOW)
                         .appendSpace()
                         .append(Component.text("Grave", NamedTextColor.GREEN));
@@ -144,9 +160,11 @@ public class GraveCreationListener extends GraveListener {
         var block = event.getClickedBlock();
         if(block.getType() != Material.PLAYER_HEAD) return;
         if(!(block.getState() instanceof Skull skull)) return;
-        if(!skull.getPersistentDataContainer().has(getUuidKey())) return;
-        var graveId = skull.getPersistentDataContainer().get(getUuidKey(), PersistentDataType.STRING);
-        var graveOpt = getGraves().stream().filter(graves -> graves.getId().toString().equals(graveId)).findFirst();
+        var uuidKey = GravesManager.get().getUuidKey();
+        var graves = GravesManager.get().getGraves();
+        if(!skull.getPersistentDataContainer().has(uuidKey)) return;
+        var graveId = skull.getPersistentDataContainer().get(uuidKey, PersistentDataType.STRING);
+        var graveOpt = graves.stream().filter(grave -> grave.getId().toString().equals(graveId)).findFirst();
         if(graveOpt.isEmpty()) return;
         var grave = graveOpt.get();
         if(!grave.getPlayer().equals(player.getUniqueId())) {
@@ -162,36 +180,42 @@ public class GraveCreationListener extends GraveListener {
                     item -> block.getWorld().dropItemNaturally(block.getLocation(), item)
             );
         }
-        GraveUtils.clearArmorStands(this, grave);
-        getGraves().remove(grave);
-        GravesPlugin.get().getSaveFile().set("graves", Collections.unmodifiableList(getGraves()));
+        GraveUtils.clearArmorStands(grave);
+        graves.remove(grave);
+        GravesManager.get().getSaveConfig().set("graves", Collections.unmodifiableList(graves));
         block.setType(Material.AIR);
         player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1, 1);
+        Arrays.stream(player.getInventory().getContents()).filter(item  -> {
+            if(item != null && item.getType() == Material.COMPASS && item.hasItemMeta())
+                return item.getItemMeta().getPersistentDataContainer().has(GravesManager.get().getUuidKey());
+            return false;
+        }).forEach(item -> player.getInventory().removeItem(item));
     }
 
     @EventHandler
     public void onBlockBreak(BlockBreakEvent event) {
         var block = event.getBlock();
         if(block.getType() != Material.PLAYER_HEAD) return;
-        if(block.getState() instanceof Skull skull && skull.getPersistentDataContainer().has(getUuidKey())) {
+        if(block.getState() instanceof Skull skull && skull.getPersistentDataContainer().has(GravesManager.get().getUuidKey())) {
             event.setCancelled(true);
         }
     }
 
     @EventHandler
     public void onEntityLoad(EntitiesLoadEvent event) {
+        var uuidKey = GravesManager.get().getUuidKey();
         var entities = event.getEntities().stream().filter(entity ->
-                entity instanceof ArmorStand && entity.getPersistentDataContainer().has(getUuidKey())
+                entity instanceof ArmorStand && entity.getPersistentDataContainer().has(uuidKey)
         ).toArray(Entity[]::new);
         if(entities.length == 0) return;
         Arrays.stream(entities).filter(entity ->
-                !entity.getPersistentDataContainer().has(getCounterKey())
+                !entity.getPersistentDataContainer().has(GravesManager.get().getCounterKey())
         ).forEach(entity -> {
-            var uuid = entity.getPersistentDataContainer().get(getUuidKey(), PersistentDataType.STRING);
-            var graveOpt = getGraves().stream().filter(grave -> grave.getId().toString().equals(uuid)).findFirst();
+            var uuid = entity.getPersistentDataContainer().get(uuidKey, PersistentDataType.STRING);
+            var graveOpt = GravesManager.get().getGraves().stream().filter(grave -> grave.getId().toString().equals(uuid)).findFirst();
             if(graveOpt.isEmpty()) {
                 entity.getLocation().getBlock().setType(Material.AIR);
-                GraveUtils.clearArmorStands(this, entity.getLocation());
+                GraveUtils.clearArmorStands(entity.getLocation());
             }
         });
     }
